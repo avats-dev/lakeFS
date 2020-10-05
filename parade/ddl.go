@@ -2,6 +2,7 @@ package parade
 
 import (
 	"context"
+	"database/sql"
 	"database/sql/driver"
 	"errors"
 	"fmt"
@@ -256,28 +257,32 @@ func WaitForTask(ctx context.Context, conn *pgx.Conn, taskID TaskID) (resultStat
 	}()
 	row := tx.QueryRow(ctx, `SELECT finish_channel, status_code, status FROM tasks WHERE id=$1`, taskID)
 	var (
-		finishChannel string
+		finishChannel sql.NullString
 		statusCode    TaskStatusCodeValue = TaskInvalid
-		status        string              = "invalid"
+		status        sql.NullString      = sql.NullString{Valid: false}
 	)
-	if err = row.Scan(&finishChannel, &statusCode, &status); err != nil {
-		return status, statusCode, fmt.Errorf("check task %s to listen: %w", taskID, err)
+	err = row.Scan(&finishChannel, &statusCode, &status)
+	if !status.Valid {
+		status.String = "unknown"
+	}
+	if err != nil {
+		return status.String, statusCode, fmt.Errorf("check task %s to listen: %w", taskID, err)
+	}
+	if !finishChannel.Valid {
+		return status.String, statusCode, fmt.Errorf("cannot wait for task %s: %w", taskID, ErrNoFinishChannel)
 	}
 	if statusCode != TaskInProgress && statusCode != TaskPending {
 		// Already done, no need to sleep.
-		return status, statusCode, nil
-	}
-	if finishChannel == "" {
-		return status, statusCode, fmt.Errorf("cannot wait for task %s: %w", taskID, ErrNoFinishChannel)
+		return status.String, statusCode, nil
 	}
 
-	if _, err = tx.Exec(ctx, "LISTEN "+pgx.Identifier{finishChannel}.Sanitize()); err != nil {
-		return "", TaskInvalid, fmt.Errorf("listen for %s: %w", finishChannel, err)
+	if _, err = tx.Exec(ctx, "LISTEN "+pgx.Identifier{finishChannel.String}.Sanitize()); err != nil {
+		return "", TaskInvalid, fmt.Errorf("listen for %s: %w", finishChannel.String, err)
 	}
 
 	_, err = conn.WaitForNotification(ctx)
 	if err != nil {
-		return "", TaskInvalid, fmt.Errorf("wait for notification %s: %w", finishChannel, err)
+		return "", TaskInvalid, fmt.Errorf("wait for notification %s: %w", finishChannel.String, err)
 	}
 
 	row = tx.QueryRow(ctx, `SELECT status, status_code FROM tasks WHERE id=$1`, taskID)
@@ -289,7 +294,7 @@ func WaitForTask(ctx context.Context, conn *pgx.Conn, taskID TaskID) (resultStat
 		err = tx.Commit(ctx)
 		tx = nil
 	}
-	return status, statusCode, err
+	return status.String, statusCode, err
 }
 
 // taskWithNewIterator is a pgx.CopyFromSource iterator that passes each task along with a

@@ -84,6 +84,7 @@ func (p *ParadeDB) WaitForTask(ctx context.Context, taskID TaskID) (resultStatus
 	if err != nil {
 		return
 	}
+	defer sqlConn.Close()
 
 	// Errors returned by setting the return variables directly.
 
