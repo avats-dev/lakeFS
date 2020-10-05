@@ -279,20 +279,20 @@ func WaitForTask(ctx context.Context, conn *pgx.Conn, taskID TaskID) (resultStat
 	if _, err = tx.Exec(ctx, "LISTEN "+pgx.Identifier{finishChannel.String}.Sanitize()); err != nil {
 		return "", TaskInvalid, fmt.Errorf("listen for %s: %w", finishChannel.String, err)
 	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", TaskInvalid, fmt.Errorf("COMMIT and start LISTENing: %w", err)
+	}
+	tx = nil
 
 	_, err = conn.WaitForNotification(ctx)
 	if err != nil {
 		return "", TaskInvalid, fmt.Errorf("wait for notification %s: %w", finishChannel.String, err)
 	}
 
-	row = tx.QueryRow(ctx, `SELECT status, status_code FROM tasks WHERE id=$1`, taskID)
+	row = conn.QueryRow(ctx, `SELECT status, status_code FROM tasks WHERE id=$1`, taskID)
 	err = row.Scan(&status, &statusCode)
 	if err != nil {
 		err = fmt.Errorf("query status for task %s: %w", taskID, err)
-	}
-	if err == nil {
-		err = tx.Commit(ctx)
-		tx = nil
 	}
 	return status.String, statusCode, err
 }
